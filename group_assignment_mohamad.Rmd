@@ -1,0 +1,246 @@
+---
+title: "Exploring Energy, CO2 emmissions and GDP growth"
+author: "Babbage"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: zenburn
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+    code_folding: show
+  pdf_document:
+    toc: yes
+---
+```{r, setup, echo=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE, 
+  warning = FALSE, 
+  tidy=FALSE,     # display code as typed
+  size="small")   # slightly smaller font for code
+options(digits = 3)
+
+# default figure size
+knitr::opts_chunk$set(
+  fig.width=6.75, 
+  fig.height=6.75,
+  fig.align = "center"
+)
+```
+
+```{r rubric, echo=FALSE, out.width="90%"}
+knitr::include_graphics(here::here("images", "rubric_group.png"), error = FALSE)
+```
+
+```{r}
+# Libraries
+library(tidyverse)
+library(wbstats)
+library(skimr)
+library(countrycode)
+library(here)
+library(scales)
+library(ggtext)
+library(lubridate)
+library(readr)
+
+```
+
+```{r}
+
+# Download electricity data
+url <- "https://nyc3.digitaloceanspaces.com/owid-public/data/energy/owid-energy-data.csv"
+
+# Download electricity data
+energy <- read_csv(url) %>% 
+  filter(year >= 1990) %>% 
+  drop_na(iso_code) %>% 
+  select(1:3,
+         biofuel = biofuel_electricity,
+         coal = coal_electricity,
+         gas = gas_electricity,
+         hydro = hydro_electricity,
+         nuclear = nuclear_electricity,
+         oil = oil_electricity,
+         other_renewable = other_renewable_exc_biofuel_electricity,
+         solar = solar_electricity,
+         wind = wind_electricity, 
+         electricity_demand,
+         electricity_generation,
+         net_elec_imports,	# Net electricity imports, measured in terawatt-hours
+         energy_per_capita,	# Primary energy consumption per capita, measured in kilowatt-hours	Calculated by Our World in Data based on BP Statistical Review of World Energy and EIA International Energy Data
+         energy_per_gdp,	# Energy consumption per unit of GDP. This is measured in kilowatt-hours per 2011 international-$.
+         per_capita_electricity, #	Electricity generation per capita, measured in kilowatt-hours
+  ) 
+
+energy_long <- energy %>% 
+  select(1:12) %>% 
+  pivot_longer(cols = 4:12,
+               names_to = 'source',
+               values_to = 'value') %>% 
+  drop_na(value) %>% 
+  drop_na(iso_code)
+
+# Download data for C02 emissions per capita https://data.worldbank.org/indicator/EN.ATM.CO2E.PC
+co2_percap <- wb_data(country = "countries_only", 
+                      indicator = "EN.ATM.CO2E.PC", 
+                      start_date = 1990, 
+                      end_date = 2022,
+                      return_wide=FALSE) %>% 
+  filter(!is.na(value)) %>% 
+  #drop unwanted variables
+  select(-c(unit, obs_status, footnote, last_updated)) %>% 
+  rename(year = date,
+         co2percap = value)
+
+
+# Download data for GDP per capita  https://data.worldbank.org/indicator/NY.GDP.PCAP.PP.KD
+gdp_percap <- wb_data(country = "countries_only", 
+                      indicator = "NY.GDP.PCAP.PP.KD", 
+                      start_date = 1990, 
+                      end_date = 2022,
+                      return_wide=FALSE) %>% 
+  filter(!is.na(value)) %>% 
+  #drop unwanted variables
+  select(-c(unit, obs_status, footnote, last_updated)) %>% 
+  rename(year = date,
+         GDPpercap = value)
+```
+
+```{r}
+# Assuming you've already loaded 'energy', 'co2_percap', and 'gdp_percap' datasets as described
+
+# Step 1: Joining the datasets
+country_names <- energy_long %>% 
+  distinct(iso_code, country) %>% 
+  select(iso_code, country)
+
+join1 <- gdp_percap %>% 
+  left_join(co2_percap, by = c("country", "year")) %>% 
+  select(iso_code = iso3c.x, country, year, GDPpercap, co2percap) %>% 
+  left_join(country_names, by = "iso_code") %>% 
+  rename(country = country.y)
+
+
+join2 <- join1 %>% 
+  left_join(energy, by = c("country", "year")) 
+
+
+library(countrycode)
+join2 <- join2 %>% 
+  mutate(
+    continent = countrycode(country, 
+                            origin = 'country.name',
+                            destination = "continent"),
+    iso3c = countrycode(country, 
+                        origin = 'country.name',
+                        destination = "iso3c"),
+  ) %>% 
+  select(-c(iso_code.x, country.x, iso_code.y))
+
+
+# Let us downlaod population data from World Bank
+# https://data.worldbank.org/indicator/SP.POP.TOTL
+# Download population data 
+population <- wb_data(country = "countries_only", 
+                      indicator = "SP.POP.TOTL", 
+                      start_date = 1970, 
+                      end_date = 2022,
+                      return_wide=FALSE) %>% 
+  filter(!is.na(value)) %>% 
+  #drop unwanted variables
+  select(-c(unit, obs_status, footnote, last_updated))
+
+# join population data with everything else 
+join2 <- join2 %>% 
+  left_join(population, by=c("iso3c", "year" = "date")) %>% 
+  rename(population = value,
+         country = country.x) %>% 
+  select(-c(indicator_id, indicator, iso2c, country.y))
+
+```
+
+```{r}
+# Step 2: Calculate the marginal change in CO2 and GDP
+join2 <- join2 %>%
+  arrange(iso3c, year) %>%
+  group_by(iso3c) %>%
+  mutate(co2_change = co2percap - lag(co2percap),
+         gdp_change = GDPpercap - lag(GDPpercap)) %>%
+  filter(year <= 2020) %>%
+  ungroup()
+
+
+
+```
+```{r}
+# Step 3: Identify top 10 countries
+# Identify countries with increased GDP and decreased CO2 (in percentage terms)
+top_countries <- join2 %>%
+  group_by(iso3c) %>%
+  summarize(total_co2_change = (last(co2percap) - first(co2percap)) / first(co2percap) * 100,
+            total_gdp_change = (last(GDPpercap) - first(GDPpercap)) / first(GDPpercap) * 100) %>%
+  filter(total_co2_change < 0, total_gdp_change > 0) %>% # Ensure CO2 decreased and GDP increased
+  arrange(desc(total_gdp_change + total_co2_change)) %>%
+  slice_head(n = 10) %>%
+  pull(iso3c)
+
+```
+```{r}
+# Calculate percentage change from the baseline year for each country
+top_countries_data <- top_countries_data %>%
+  group_by(iso3c) %>%
+  mutate(baseline_gdp = first(GDPpercap),
+         baseline_co2 = first(co2percap),
+         gdp_perc_change = (GDPpercap / baseline_gdp - 1) * 100,
+         co2_perc_change = (co2percap / baseline_co2 - 1) * 100) %>%
+  ungroup()
+
+# Plotting the percentage changes
+ggplot(top_countries_data, aes(x = year)) +
+  geom_line(aes(y = gdp_perc_change, colour = "GDP per Capita")) +
+  geom_line(aes(y = co2_perc_change, colour = "CO2 per Capita")) +
+  facet_wrap(~ country, scales = "free_y") +
+  scale_colour_manual("", 
+                      breaks = c("GDP per Capita", "CO2 per Capita"),
+                      values = c("GDP per Capita" = "blue", "CO2 per Capita" = "red")) +
+  labs(title = "Percentage Change in GDP per Capita and CO2 Emissions per Capita Over Time",
+       x = "Year",
+       y = "Percentage Change") +
+  theme_minimal()
+
+
+```
+
+
+```{r}
+# Step 4: Extract energy data for top countries
+top_energy_data <- energy %>%
+  filter(iso_code %in% top_countries) %>%
+  pivot_longer(cols = biofuel:wind, names_to = 'source', values_to = 'value') %>%
+  drop_na(value)
+
+```
+
+```{r}
+# Step 5: Create a plot of energy production
+# Create a plot of energy production
+ggplot(data = top_energy_data, aes(x = year, y = value, color = source)) +
+  geom_line() +
+  facet_wrap(~iso_code, scales = "free_y", nrow = 2) + # Adjust the layout with nrow and ncol
+  scale_color_viridis_d() +
+  labs(title = "Energy Production Types of Top 10 Countries",
+       y = "Electricity Generation (TWh)",
+       color = "Energy Source") +
+  theme_minimal()
+
+
+```
+
+
+```{r}
+
+```
+
+
