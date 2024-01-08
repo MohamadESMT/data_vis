@@ -182,14 +182,15 @@ top_countries <- join2 %>%
   summarize(total_co2_change = (last(co2percap) - first(co2percap)) / first(co2percap) * 100,
             total_gdp_change = (last(GDPpercap) - first(GDPpercap)) / first(GDPpercap) * 100) %>%
   filter(total_co2_change < 0, total_gdp_change > 0) %>% # Ensure CO2 decreased and GDP increased
-  arrange(desc(total_gdp_change + total_co2_change)) %>%
+  arrange(desc(total_gdp_change / abs(total_co2_change)) %>%
   slice_head(n = 10) %>%
   pull(iso3c)
 
 ```
 ```{r}
 # Calculate percentage change from the baseline year for each country
-top_countries_data <- top_countries_data %>%
+top_countries_data <- join2 %>%
+  filter(iso3c %in% top_countries) %>%
   group_by(iso3c) %>%
   mutate(baseline_gdp = first(GDPpercap),
          baseline_co2 = first(co2percap),
@@ -226,14 +227,17 @@ top_energy_data <- energy %>%
 ```{r}
 # Step 5: Create a plot of energy production
 # Create a plot of energy production
-ggplot(data = top_energy_data, aes(x = year, y = value, color = source)) +
-  geom_line() +
+# Create an area plot of energy production
+ggplot(data = top_energy_data, aes(x = year, y = value, fill = source)) +
+  geom_area(position = 'stack', alpha = 0.6) + # Stack the areas and set transparency
   facet_wrap(~iso_code, scales = "free_y", nrow = 2) + # Adjust the layout with nrow and ncol
-  scale_color_viridis_d() +
+  scale_fill_viridis_d() + # Use viridis palette for filling color
   labs(title = "Energy Production Types of Top 10 Countries",
        y = "Electricity Generation (TWh)",
-       color = "Energy Source") +
-  theme_minimal()
+       fill = "Energy Source") + # Label for the fill legend
+  theme_minimal() +
+  theme(legend.position = "bottom") # Move the legend to the bottom
+
 
 
 ```
